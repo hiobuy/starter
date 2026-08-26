@@ -1,0 +1,3 @@
+# Used by `pnpm preview` / Wrangler. Selects which Next.js `.env*` files to load.
+# Put secrets in `.env.local` for both `pnpm dev` and local Workers preview.
+NEXTJS_ENV=development
