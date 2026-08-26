@@ -180,11 +180,25 @@ The official HIOBuy Starter demo is deployed on Cloudflare Workers:
 This project is a standard Next.js application and does not require Cloudflare for local development or self-hosting.
 
 ```bash
-pnpm preview   # OpenNext build + local Workers runtime
-pnpm deploy    # OpenNext build + deploy to Cloudflare Workers
+pnpm preview   # OpenNext build + local Workers runtime (uses .env.local)
+pnpm deploy    # production deploy (does NOT bake .env.local)
 ```
 
-Set `HIOBUY_API_KEY` as a Cloudflare Worker secret (`wrangler secret put HIOBUY_API_KEY`). Do not put it in `wrangler.jsonc` or any client-side env var.
+### Secrets (required for production)
+
+OpenNext can embed Next.js `.env*` values into the Worker server bundle at **build** time. That is why a local `pnpm deploy` with `.env.local` present may appear to “work” even if you never ran `wrangler secret put`.
+
+`pnpm deploy` temporarily moves `.env.local` aside during the build so API keys are **not** shipped inside the Worker. Set runtime secrets on Cloudflare instead:
+
+```bash
+wrangler secret put HIOBUY_API_KEY
+# optional:
+wrangler secret put HIOBUY_DEFAULT_LANGUAGE
+```
+
+Do not put secrets in `wrangler.jsonc`, Git, or any `NEXT_PUBLIC_*` variable.
+
+If you already deployed while `.env.local` was present, **rotate that API key** in the Developer Portal and redeploy with Cloudflare Secrets.
 
 ## Documentation
 
