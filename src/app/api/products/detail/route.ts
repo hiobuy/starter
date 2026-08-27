@@ -8,6 +8,7 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       channel?: ProductChannel;
       id?: string;
+      url?: string;
     };
 
     if (!body.channel || !["1688", "taobao", "weidian"].includes(body.channel)) {
@@ -21,16 +22,24 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    if (!body.id?.trim()) {
+    const id = body.id?.trim();
+    const url = body.url?.trim();
+    if (!id && !url) {
       return NextResponse.json(
-        { error: { code: "VALIDATION_ERROR", message: "id is required" } },
+        {
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "id or url is required",
+          },
+        },
         { status: 400 },
       );
     }
 
     const data = await getProductDetail({
       channel: body.channel,
-      id: body.id.trim(),
+      ...(id ? { id } : {}),
+      ...(url ? { url } : {}),
     });
 
     return NextResponse.json(data);

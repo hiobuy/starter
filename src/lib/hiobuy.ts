@@ -159,13 +159,20 @@ export async function parseProduct(input: {
 
 export async function getProductDetail(input: {
   channel: ProductChannel;
-  id: string;
+  id?: string;
+  url?: string;
 }): Promise<{ product: StandardProductDetail; request_id?: string }> {
+  const id = input.id?.trim();
+  const url = input.url?.trim();
+  if (!id && !url) {
+    throw new Error("id or url is required");
+  }
   return hiobuyFetch<{ product: StandardProductDetail; request_id?: string }>(
     "/v1/products/detail",
     {
       channel: input.channel,
-      id: input.id,
+      ...(id ? { id } : {}),
+      ...(url ? { url } : {}),
     },
   );
 }

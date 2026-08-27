@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { ProductCard } from "@/components/product-card";
 import { SearchHero } from "@/components/search-hero";
+import { readStoredImageSearch } from "@/lib/image-search-storage";
 import type { ProductChannel, ProductListItem } from "@/lib/types";
 
 type SearchMode = "text" | "image" | "image-url";
@@ -42,10 +43,13 @@ export function SearchPageClient({
   channel,
   keyword,
   mode,
+  imageSearchKey = "",
 }: {
   channel: ProductChannel;
   keyword: string;
   mode: SearchMode;
+  /** Bumps when a new image search is submitted (URL `t` param). */
+  imageSearchKey?: string;
 }) {
   const [items, setItems] = useState<ProductListItem[]>([]);
   const [total, setTotal] = useState<number | null>(null);
@@ -71,24 +75,22 @@ export function SearchPageClient({
     };
 
     if (mode === "image") {
-      const raw = sessionStorage.getItem("hiobuy_demo_image_search");
-      if (!raw) {
+      const payload = readStoredImageSearch();
+      if (!payload) {
         throw new Error(
           "No uploaded image found. Go back and choose an image again.",
         );
       }
-      const payload = JSON.parse(raw) as {
-        channel: ProductChannel;
-        image_base64: string;
-        keyword?: string;
-      };
       const res = await fetch("/api/products/search-by-image", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...common,
-          channel: payload.channel || channel,
-          image_base64: payload.image_base64,
+          channel,
+          image_base64: payload.image_base64.replace(
+            /^data:image\/[a-zA-Z+]+;base64,/,
+            "",
+          ),
           ...(payload.keyword || keyword
             ? { keyword: payload.keyword || keyword }
             : {}),
@@ -177,7 +179,7 @@ export function SearchPageClient({
     };
     // requestPage reads current filter/sort/search inputs
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channel, keyword, mode, appliedPriceMin, appliedPriceMax, sort]);
+  }, [channel, keyword, mode, appliedPriceMin, appliedPriceMax, sort, imageSearchKey]);
 
   function applyPriceRange() {
     setAppliedPriceMin(priceMin.trim());
@@ -243,6 +245,7 @@ export function SearchPageClient({
         initialChannel={channel}
         initialKeyword={keyword}
         initialMode={mode}
+        imageSearchKey={imageSearchKey}
       />
 
       <div style={{ height: "1.25rem" }} />
@@ -316,8 +319,9 @@ export function SearchPageClient({
 
       {!loading && !error && items.length === 0 && canSearch ? (
         <div className="empty-state">
-          No products returned. Check channel authorization in the Developer Portal,
-          or try another keyword / image.
+          {mode === "image" || mode === "image-url"
+            ? `No similar products on ${channel}. Try a clearer photo, another image, or paste a product image URL (Taobao/Tmall CDN links work well for ${channel}).`
+            : "No products returned. Try another keyword."}
         </div>
       ) : null}
 

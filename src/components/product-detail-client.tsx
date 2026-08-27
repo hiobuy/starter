@@ -12,9 +12,11 @@ import {
 export function ProductDetailClient({
   channel,
   id,
+  url,
 }: {
   channel: ProductChannel;
-  id: string;
+  id?: string;
+  url?: string;
 }) {
   const [product, setProduct] = useState<StandardProductDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -32,7 +34,11 @@ export function ProductDetailClient({
         const res = await fetch("/api/products/detail", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ channel, id }),
+          body: JSON.stringify({
+            channel,
+            ...(id ? { id } : {}),
+            ...(url ? { url } : {}),
+          }),
         });
         const data = await res.json();
         if (!res.ok) {
@@ -56,7 +62,7 @@ export function ProductDetailClient({
     return () => {
       cancelled = true;
     };
-  }, [channel, id]);
+  }, [channel, id, url]);
 
   const images = useMemo(() => {
     const urls = [

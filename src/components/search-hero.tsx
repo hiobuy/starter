@@ -11,6 +11,13 @@ import {
   useState,
 } from "react";
 import { useRouter } from "next/navigation";
+import {
+  clearStoredImageSearch,
+  readStoredImageSearch,
+  writeStoredImageSearch,
+} from "@/lib/image-search-storage";
+import { compressImageFile } from "@/lib/compress-image";
+import { detectChannelFromUrl, imageSearchChannelForUrl } from "@/lib/channel-url";
 import type { ProductChannel } from "@/lib/types";
 
 const SUGGESTIONS = [
@@ -34,10 +41,12 @@ export function SearchHero({
   initialKeyword = "",
   initialChannel = "1688",
   initialMode = "text",
+  imageSearchKey = "",
 }: {
   initialKeyword?: string;
   initialChannel?: ProductChannel;
   initialMode?: ComposerMode;
+  imageSearchKey?: string;
 }) {
   const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -50,6 +59,48 @@ export function SearchHero({
   const [dragging, setDragging] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [storedPreview, setStoredPreview] = useState<{
+    name: string;
+    url: string;
+  } | null>(null);
+
+  useEffect(() => {
+    const nextChannel =
+      initialChannel === "weidian" ? "1688" : initialChannel;
+    setKeyword(initialKeyword);
+    setChannel(nextChannel);
+    if (initialMode === "image") {
+      setMode("image");
+      const stored = readStoredImageSearch();
+      if (stored?.keyword && !initialKeyword) {
+        setKeyword(stored.keyword);
+      }
+    } else if (initialKeyword.trim()) {
+      setMode(inferComposerMode(initialKeyword));
+    } else {
+      setMode(initialMode);
+    }
+    if (initialMode !== "image") {
+      setFiles([]);
+    }
+  }, [initialMode, initialKeyword, initialChannel]);
+
+  // sessionStorage is client-only — load after mount to avoid hydration mismatch
+  useEffect(() => {
+    if (files.length > 0 || initialMode !== "image") {
+      setStoredPreview(null);
+      return;
+    }
+    const stored = readStoredImageSearch();
+    if (!stored?.image_base64) {
+      setStoredPreview(null);
+      return;
+    }
+    const url = stored.image_base64.startsWith("data:")
+      ? stored.image_base64
+      : `data:image/jpeg;base64,${stored.image_base64}`;
+    setStoredPreview({ name: stored.name || "image", url });
+  }, [files, initialMode, imageSearchKey]);
 
   const previews = useMemo(
     () => files.map((file) => ({ name: file.name, url: URL.createObjectURL(file) })),
@@ -87,6 +138,14 @@ export function SearchHero({
     if (images.length) {
       e.preventDefault();
       addFiles(images);
+      return;
+    }
+    const pastedText = e.clipboardData?.getData("text")?.trim();
+    if (pastedText && !files.length) {
+      const inferred = inferComposerMode(pastedText);
+      if (inferred !== "text") {
+        setMode(inferred);
+      }
     }
   }
 
@@ -100,16 +159,23 @@ export function SearchHero({
     setError("");
   }
 
+  function removeStoredPreview() {
+    clearStoredImageSearch();
+    setStoredPreview(null);
+    setMode("text");
+    router.push(`/search?channel=${channel}`);
+  }
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setError("");
 
     const query = keyword.trim();
-    const product = parseProductUrl(query);
     const imageUrl = looksLikeImageUrl(query);
+    const marketplaceUrl = looksLikeMarketplaceProductUrl(query);
 
-    if (mode === "product-url" || (mode === "text" && product)) {
-      await openProduct(query, product);
+    if (mode === "product-url" || marketplaceUrl) {
+      openProduct(query);
       return;
     }
 
@@ -118,19 +184,33 @@ export function SearchHero({
       return;
     }
 
+    if (mode === "image") {
+      const stored = readStoredImageSearch();
+      if (stored) {
+        writeStoredImageSearch({
+          ...stored,
+          channel,
+          keyword: query || undefined,
+        });
+        const qs = query ? `&q=${encodeURIComponent(query)}` : "";
+        router.push(
+          `/search?channel=${channel}&mode=image${qs}&t=${Date.now()}`,
+        );
+        return;
+      }
+      setError("Drop or choose an image first.");
+      return;
+    }
+
     if (mode === "image-url" || (mode === "text" && imageUrl)) {
       if (!query) {
         setError("Paste an image URL first.");
         return;
       }
+      const imgChannel = imageSearchChannelForUrl(query, channel);
       router.push(
-        `/search?channel=${channel}&mode=image-url&q=${encodeURIComponent(query)}`,
+        `/search?channel=${imgChannel}&mode=image-url&q=${encodeURIComponent(query)}`,
       );
-      return;
-    }
-
-    if (mode === "image") {
-      setError("Drop or choose an image first.");
       return;
     }
 
@@ -140,7 +220,7 @@ export function SearchHero({
     }
 
     if (looksLikeHttpUrl(query)) {
-      await openProduct(query, product);
+      openProduct(query);
       return;
     }
 
@@ -150,20 +230,21 @@ export function SearchHero({
   async function openImageSearch(file: File, extraKeyword: string) {
     setLoading(true);
     try {
-      const base64 = await fileToBase64(file);
-      sessionStorage.setItem(
-        "hiobuy_demo_image_search",
-        JSON.stringify({
-          channel,
-          image_base64: base64,
-          name: file.name,
-          keyword: extraKeyword || undefined,
-        }),
-      );
+      const prepared = await compressImageFile(file);
+      const base64 = await fileToBase64(prepared);
+      writeStoredImageSearch({
+        channel,
+        image_base64: base64,
+        name: file.name,
+        keyword: extraKeyword || undefined,
+      });
+      setFiles([]);
       const qs = extraKeyword
         ? `&q=${encodeURIComponent(extraKeyword)}`
         : "";
-      router.push(`/search?channel=${channel}&mode=image${qs}`);
+      router.push(
+        `/search?channel=${channel}&mode=image${qs}&t=${Date.now()}`,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to read image");
     } finally {
@@ -171,40 +252,16 @@ export function SearchHero({
     }
   }
 
-  async function openProduct(
-    raw: string,
-    parsed: { channel: ProductChannel; id: string } | null,
-  ) {
-    if (!raw.trim()) {
+  function openProduct(raw: string) {
+    const url = raw.trim();
+    if (!url) {
       setError("Paste a product URL first.");
       return;
     }
-    if (parsed) {
-      router.push(`/product/${parsed.channel}/${encodeURIComponent(parsed.id)}`);
-      return;
-    }
-    setLoading(true);
-    try {
-      const res = await fetch("/api/products/parse", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: raw.trim() }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data?.error?.message || "Could not parse that product URL");
-      }
-      const id = data?.product?.id as string | undefined;
-      const parsedChannel = data?.product?.channel as ProductChannel | undefined;
-      if (!id || !parsedChannel) {
-        throw new Error("Parse succeeded but no product id was returned");
-      }
-      router.push(`/product/${parsedChannel}/${encodeURIComponent(id)}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not open that product URL");
-    } finally {
-      setLoading(false);
-    }
+    const detected = detectChannelFromUrl(url) ?? channel;
+    router.push(
+      `/product/${detected}/by-url?url=${encodeURIComponent(url)}`,
+    );
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
@@ -272,7 +329,13 @@ export function SearchHero({
         <textarea
           className="search-textarea"
           value={keyword}
-          onChange={(e) => setKeyword(e.target.value)}
+          onChange={(e) => {
+            const value = e.target.value;
+            setKeyword(value);
+            if (!files.length) {
+              setMode(inferComposerMode(value));
+            }
+          }}
           onPaste={onPaste}
           onKeyDown={onKeyDown}
           placeholder={PLACEHOLDERS[mode]}
@@ -280,8 +343,22 @@ export function SearchHero({
           aria-label="Search"
         />
 
-        {previews.length ? (
+        {previews.length || storedPreview ? (
           <div className="search-attachments">
+            {storedPreview ? (
+              <div className="search-thumb">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={storedPreview.url} alt={storedPreview.name} />
+                <button
+                  type="button"
+                  className="search-thumb-remove"
+                  aria-label={`Remove ${storedPreview.name}`}
+                  onClick={removeStoredPreview}
+                >
+                  ×
+                </button>
+              </div>
+            ) : null}
             {previews.map((preview, index) => (
               <div key={`${preview.name}-${index}`} className="search-thumb">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -354,6 +431,36 @@ export function SearchHero({
   );
 }
 
+function inferComposerMode(input: string): ComposerMode {
+  const text = input.trim();
+  if (!text) return "text";
+  if (looksLikeMarketplaceProductUrl(text)) return "product-url";
+  if (looksLikeImageUrl(text)) return "image-url";
+  if (looksLikeHttpUrl(text)) return "product-url";
+  return "text";
+}
+
+function looksLikeMarketplaceProductUrl(input: string): boolean {
+  const text = input.trim();
+  if (!looksLikeHttpUrl(text)) return false;
+  try {
+    const url = new URL(text);
+    const host = url.hostname.toLowerCase();
+    if (/1688\.com$/i.test(host) || /weidian\.com$/i.test(host)) return true;
+    if (/(?:^|\.)(?:taobao|tmall)\.com$/i.test(host) || /tmall\.hk$/i.test(host)) {
+      return Boolean(
+        url.searchParams.get("id") ||
+          url.searchParams.get("item_id") ||
+          url.searchParams.get("mi_id") ||
+          /\/item\.htm/i.test(url.pathname),
+      );
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 function looksLikeHttpUrl(input: string): boolean {
   return /^https?:\/\/\S+$/i.test(input.trim());
 }
@@ -361,33 +468,17 @@ function looksLikeHttpUrl(input: string): boolean {
 function looksLikeImageUrl(input: string): boolean {
   const text = input.trim();
   if (!looksLikeHttpUrl(text)) return false;
-  return /\.(avif|bmp|gif|jpe?g|png|webp)(\?|#|$)/i.test(text);
-}
-
-function parseProductUrl(
-  input: string,
-): { channel: ProductChannel; id: string } | null {
-  const text = input.trim();
-  const offer = text.match(
-    /(?:https?:\/\/)?(?:[\w.-]*\.)?1688\.com\/offer\/(\d+)/i,
-  );
-  if (offer) return { channel: "1688", id: offer[1] };
-
-  const weidian = text.match(/[?&]itemID=(\d+)/i);
-  if (weidian && /weidian\.com/i.test(text)) {
-    return { channel: "weidian", id: weidian[1] };
-  }
-
+  if (/\.(avif|bmp|gif|jpe?g|png|webp)(\?|#|$)/i.test(text)) return true;
   try {
-    const url = new URL(text.startsWith("http") ? text : `https://${text}`);
-    if (/(?:^|\.)(?:taobao|tmall)\.com$/i.test(url.hostname) || /tmall\.hk$/i.test(url.hostname)) {
-      const id = url.searchParams.get("id") || url.searchParams.get("item_id");
-      if (id) return { channel: "taobao", id };
+    const url = new URL(text);
+    const host = url.hostname.toLowerCase();
+    if (host.endsWith(".alicdn.com") || host.endsWith(".tbcdn.cn")) {
+      return /\/(bao\/uploaded|imgextra)\//i.test(url.pathname);
     }
   } catch {
-    return null;
+    return false;
   }
-  return null;
+  return false;
 }
 
 function fileToBase64(file: File): Promise<string> {

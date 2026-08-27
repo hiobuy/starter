@@ -8,6 +8,7 @@ export default async function SearchPage({
     q?: string;
     channel?: string;
     mode?: string;
+    t?: string;
   }>;
 }) {
   const params = await searchParams;
@@ -21,6 +22,11 @@ export default async function SearchPage({
         : "text";
 
   return (
-    <SearchPageClient channel={channel} keyword={keyword} mode={mode} />
+    <SearchPageClient
+      channel={channel}
+      keyword={keyword}
+      mode={mode}
+      imageSearchKey={params.t?.trim() || ""}
+    />
   );
 }
